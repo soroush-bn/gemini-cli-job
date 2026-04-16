@@ -1,0 +1,10 @@
+evaluated_jobs\
+
+.gemini\skills\cv_tailor\assets\
+
+.gemini\skills\cover_letter_tailor\assets\
+
+*.cls
+*.tex
+*.txt
+*.json
