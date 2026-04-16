@@ -1,0 +1,76 @@
+import base64
+import os
+import sys
+from playwright.sync_api import sync_playwright
+import trafilatura
+
+# Mock pipeline_messenger since utils/messenger.py is not found in workspace
+class MockMessenger:
+    def send(self, channel, data):
+        print(f"DEBUG [MESSENGER] {channel}: {data}")
+
+pipeline_messenger = MockMessenger()
+
+def fetch_web_content(url: str) -> str:
+    """Fetches text content using a headless browser (Chromium). Uses saved session for LinkedIn if available."""
+    pipeline_messenger.send("agent_activity", {"stage": "Job Reader", "activity": f"Fetching content from: {url}"})
+    try:
+        with sync_playwright() as p:
+            # Launch headless browser
+            browser = p.chromium.launch(headless=True)
+            
+            # Setup context with session if it's LinkedIn and session file exists
+            session_file = "linkedin_session.json"
+            if "linkedin.com" in url.lower() and os.path.exists(session_file):
+                print(f"DEBUG: Using LinkedIn session from {session_file}...")
+                context = browser.new_context(
+                    storage_state=session_file,
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+                )
+            else:
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+                )
+                
+            page = context.new_page()
+
+            # Go to the URL and wait for the page to load
+            print(f"DEBUG: Navigating to {url}...")
+            response = page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+            # Take a screenshot
+            screenshot = page.screenshot(type='jpeg', quality=50)
+            encoded = base64.b64encode(screenshot).decode('utf-8')
+            pipeline_messenger.send("screenshot", {"data": encoded})
+
+            if response is None or response.status != 200:
+                status = response.status if response else "No Response"
+                browser.close()
+                return f"Error: Could not access {url}. Status code: {status}. The site might be blocking headless browsers."
+            
+            # Allow dynamic content to load (optional, adjust as needed)
+            page.wait_for_timeout(2000)
+            
+            # Get the rendered HTML
+            rendered_html = page.content()
+            browser.close()
+            
+            # Use trafilatura to extract clean text from the rendered HTML
+            text = trafilatura.extract(rendered_html)
+            
+            if text is None:
+                return f"Error: Could not extract clean text content from the rendered page at {url}."
+            
+            pipeline_messenger.send("agent_activity", {"stage": "Job Reader", "activity": f"Extracted {len(text)} characters from {url}"})
+            return text
+            
+    except Exception as e:
+        return f"Error fetching URL with Playwright: {str(e)}"
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python job_handler.py <url>")
+        sys.exit(1)
+    
+    url = sys.argv[1]
+    print(fetch_web_content(url))
